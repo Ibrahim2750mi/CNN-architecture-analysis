@@ -1,0 +1,6 @@
+sequence_length,cnn_pooling_accuracy,cnn_lstm_accuracy
+20,0.9293,0.9276
+40,0.9271,0.8824
+70,0.9251,0.9207
+100,0.9298,0.9189
+140,0.9324,0.9331
