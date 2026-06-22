@@ -1,7 +1,7 @@
 seed,model,early_stop_epoch
-42,CNN+Pooling,15
+42,CNN+Pooling,9
 42,CNN+LSTM,10
 123,CNN+Pooling,11
 123,CNN+LSTM,7
 789,CNN+Pooling,12
-789,CNN+LSTM,8
+789,CNN+LSTM,10
