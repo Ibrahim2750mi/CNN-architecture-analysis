@@ -92,13 +92,13 @@ y_test_arr = y_test.squeeze(-1) if y_test.ndim == 3 else y_test  # (N, 96)
 
 print(f"Test set: X={X_test_t.shape}, y={y_test_arr.shape}")
 
-# Persistence baseline (same for every seed — doesn't depend on the model)
+# Persistence baseline using the LAST hour (timestep 335) — original baseline
 last_values = X_test_t[:, 0, -1].numpy()
 persistence_preds = np.tile(last_values.reshape(-1, 1), (1, y_test_arr.shape[1]))
 persistence_mse = mean_squared_error(y_test_arr.flatten(), persistence_preds.flatten())
 persistence_mae = mean_absolute_error(y_test_arr.flatten(), persistence_preds.flatten())
 
-print(f"\nPersistence Baseline | MSE: {persistence_mse:.4f} | MAE: {persistence_mae:.4f}")
+print(f"\nPersistence Baseline (last hour) | MSE: {persistence_mse:.4f} | MAE: {persistence_mae:.4f}")
 
 
 # ============================================================
@@ -117,11 +117,14 @@ def get_predictions(model, X, batch_size=32):
 
 
 # ============================================================
-# 4. Loop over all 3 seeds
+# 4. Loop over all 3 seeds — original comparison + new multi-hour test
 # ============================================================
 
 SEEDS = [42, 123, 789]
+LOOKBACK_HOURS_TO_TEST = [236, 280, 300, 320, 330, 335]  # distances from the end of the 336h window
+
 results = []
+multihour_results = []
 
 for seed in SEEDS:
     print(f"\n{'='*60}\nSEED {seed}\n{'='*60}")
@@ -144,6 +147,7 @@ for seed in SEEDS:
     lstm_preds = get_predictions(lstm_model, X_test_t)
     pool_preds = get_predictions(pool_model, X_test_t)
 
+    # ---- Original analysis: MSE/MAE + correlation with last-hour persistence ----
     lstm_mse = mean_squared_error(y_test_arr.flatten(), lstm_preds.flatten())
     lstm_mae = mean_absolute_error(y_test_arr.flatten(), lstm_preds.flatten())
     pool_mse = mean_squared_error(y_test_arr.flatten(), pool_preds.flatten())
@@ -155,8 +159,8 @@ for seed in SEEDS:
     lstm_improve = (persistence_mse - lstm_mse) / persistence_mse * 100
     pool_improve = (persistence_mse - pool_mse) / persistence_mse * 100
 
-    print(f"CNN+LSTM    | MSE: {lstm_mse:.4f} | MAE: {lstm_mae:.4f} | Corr w/ persistence: {lstm_corr:.4f} | Improvement: {lstm_improve:+.1f}%")
-    print(f"CNN+Pooling | MSE: {pool_mse:.4f} | MAE: {pool_mae:.4f} | Corr w/ persistence: {pool_corr:.4f} | Improvement: {pool_improve:+.1f}%")
+    print(f"CNN+LSTM    | MSE: {lstm_mse:.4f} | MAE: {lstm_mae:.4f} | Corr w/ last-hour persistence: {lstm_corr:.4f} | Improvement: {lstm_improve:+.1f}%")
+    print(f"CNN+Pooling | MSE: {pool_mse:.4f} | MAE: {pool_mae:.4f} | Corr w/ last-hour persistence: {pool_corr:.4f} | Improvement: {pool_improve:+.1f}%")
 
     results.append({
         'seed': seed,
@@ -164,16 +168,42 @@ for seed in SEEDS:
         'pool_mse': pool_mse, 'pool_mae': pool_mae, 'pool_corr': pool_corr, 'pool_improve': pool_improve,
     })
 
+    # ---- NEW: multi-hour persistence comparison ----
+    # Tests whether correlation rises specifically toward hour 335 (genuine recency dependence)
+    # or stays flat across nearby hours (just signal smoothness, as you suspected)
+    print(f"\n  -- Multi-hour persistence check (seed {seed}) --")
+    for hour_idx in LOOKBACK_HOURS_TO_TEST:
+        persistence_k = np.tile(
+            X_test_t[:, 0, hour_idx].numpy().reshape(-1, 1), (1, y_test_arr.shape[1])
+        )  # (N, 96)
+
+        corr_pool_k = np.corrcoef(pool_preds.flatten(), persistence_k.flatten())[0, 1]
+        corr_lstm_k = np.corrcoef(lstm_preds.flatten(), persistence_k.flatten())[0, 1]
+        persistence_mse_k = mean_squared_error(y_test_arr.flatten(), persistence_k.flatten())
+
+        hours_before_end = 336 - hour_idx
+        print(f"    Hour {hour_idx} ({hours_before_end}h before end) | "
+              f"Pool corr: {corr_pool_k:.4f} | LSTM corr: {corr_lstm_k:.4f} | Persistence-k MSE: {persistence_mse_k:.4f}")
+
+        multihour_results.append({
+            'seed': seed,
+            'hour_idx': hour_idx,
+            'hours_before_end': hours_before_end,
+            'pool_corr': corr_pool_k,
+            'lstm_corr': corr_lstm_k,
+            'persistence_mse': persistence_mse_k,
+        })
+
 
 # ============================================================
-# 5. Averaged summary across seeds
+# 5. Averaged summary across seeds — original comparison
 # ============================================================
 
 results_df = pd.DataFrame(results)
 results_df.to_csv('persistence_comparison_all_seeds.csv', index=False)
 
 print(f"\n{'='*70}")
-print(f"AVERAGED ACROSS {len(results_df)} SEEDS")
+print(f"AVERAGED ACROSS {len(results_df)} SEEDS — ORIGINAL (last-hour) PERSISTENCE")
 print(f"{'='*70}")
 print(f"Persistence Baseline | MSE: {persistence_mse:.4f} | MAE: {persistence_mae:.4f}")
 print(f"CNN+LSTM              | MSE: {results_df['lstm_mse'].mean():.4f} ± {results_df['lstm_mse'].std():.4f} "
@@ -181,5 +211,22 @@ print(f"CNN+LSTM              | MSE: {results_df['lstm_mse'].mean():.4f} ± {res
 print(f"CNN+Pooling            | MSE: {results_df['pool_mse'].mean():.4f} ± {results_df['pool_mse'].std():.4f} "
       f"| Corr: {results_df['pool_corr'].mean():.4f} | Improvement: {results_df['pool_improve'].mean():+.1f}%")
 print(f"{'='*70}")
-
 print(results_df)
+
+
+# ============================================================
+# 6. Averaged summary — multi-hour persistence check
+# ============================================================
+
+multihour_df = pd.DataFrame(multihour_results)
+multihour_df.to_csv('multihour_persistence_comparison.csv', index=False)
+
+print(f"\n{'='*70}")
+print(f"MULTI-HOUR PERSISTENCE CHECK — AVERAGED ACROSS {len(SEEDS)} SEEDS")
+print(f"{'='*70}")
+summary = multihour_df.groupby('hours_before_end')[['pool_corr', 'lstm_corr', 'persistence_mse']].mean()
+print(summary)
+
+print(f"\nInterpretation guide:")
+print(f"  - If correlations are roughly FLAT across hours_before_end -> smoothness alone explains it (your hypothesis)")
+print(f"  - If correlations RISE specifically as hours_before_end -> 0 -> genuine recency dependence on the very last hour")
