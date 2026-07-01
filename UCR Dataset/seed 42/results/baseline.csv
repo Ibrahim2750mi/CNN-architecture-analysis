@@ -1,3 +1,0 @@
-model,accuracy,training_time_s,parameters
-CNN+Pooling,0.9304,57.1,35909
-CNN+LSTM,0.9338,864.9,300101
