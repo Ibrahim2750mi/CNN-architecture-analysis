@@ -8,43 +8,90 @@ if not os.path.exists("ECG5000_TRAIN.txt"):
     os.system('unzip -q ECG5000.zip')
 
 test_df = pd.read_csv("ECG5000_TEST.txt", header=None, sep=r'\s+')
+
 X_test = test_df.iloc[:, 1:].values.astype(np.float32)
 y_test = test_df.iloc[:, 0].values
+
 le = LabelEncoder()
 y_test = le.fit_transform(y_test).astype(np.int64)
 
 def normalize_per_sample(X):
     mean = X.mean(axis=1, keepdims=True)
-    std  = X.std(axis=1, keepdims=True) + 1e-8
+    std = X.std(axis=1, keepdims=True) + 1e-8
     return (X - mean) / std
 
 X_test_norm = normalize_per_sample(X_test)
 
 # ============================================================
-# For each candidate cutoff, look at the slope over the
-# LAST 5 timesteps BEFORE the cutoff (not the slope AT the
-# cutoff point itself)
+# Measure signal activity immediately BEFORE each cutoff
 # ============================================================
 
-def recent_slope_before_cutoff(X, cutoff, window=5):
-    """For each sample, compute how much the signal changed over
-    the `window` timesteps right before `cutoff`. Returns array of
-    shape (N,) -- one value per sample."""
+def recent_activity_before_cutoff(X, cutoff, window=5):
+    """
+    Computes the total absolute movement over the last `window`
+    timesteps before the cutoff.
+
+    Activity = |Σ x[t+1] - x[t]|
+
+    Returns one value per sample.
+    """
     start = max(0, cutoff - window)
-    segment = X[:, start:cutoff]  # (N, window)
-    # slope = (last value - first value) in this window
-    slope = segment[:, -1] - segment[:, 0]
-    return slope
 
-print("=== Average |change| over the last 5 timesteps BEFORE each cutoff ===")
-print("(Large value = signal was actively moving right before truncation)")
-print("(Small value = signal was flat/boring right before truncation)\n")
+    segment = X[:, start:cutoff]          # (N, window)
 
-for cutoff in [20, 30, 40, 50, 70, 100, 140]:
-    slopes = recent_slope_before_cutoff(X_test_norm, cutoff, window=5)
-    mean_abs_change = np.abs(slopes).mean()
-    std_abs_change = np.abs(slopes).std()
-    print(f"T={cutoff:<5} | mean |change| in last 5 steps: {mean_abs_change:.4f} (std: {std_abs_change:.4f})")
+    # Consecutive differences
+    diffs = np.diff(segment, axis=1)
 
-print("\nIf T=40 has a noticeably SMALLER value here than T=30 and T=50,")
-print("that supports: 'LSTM gets cut off during a flat/uninformative stretch at T=40'")
+    # Total absolute movement
+    activity = np.abs(diffs.sum(axis=1))
+
+    return activity
+
+
+print("="*70)
+print("Signal activity during the LAST 5 timesteps before each cutoff")
+print("(Higher = signal changing rapidly)")
+print("(Lower = flatter / less informative region)")
+print("="*70)
+
+results = []
+
+for cutoff in [20, 30, 40, 45, 50, 70, 100, 140]:
+
+    activity = recent_activity_before_cutoff(
+        X_test_norm,
+        cutoff=cutoff,
+        window=10
+    )
+
+    mean_activity = activity.mean()
+    std_activity = activity.std()
+
+    results.append({
+        "Cutoff": cutoff,
+        "MeanActivity": mean_activity,
+        "StdActivity": std_activity
+    })
+
+    print(
+        f"T={cutoff:<4} | "
+        f"Mean activity = {mean_activity:.4f} ± {std_activity:.4f}"
+    )
+
+results_df = pd.DataFrame(results)
+results_df.to_csv("activity_before_cutoff.csv", index=False)
+
+print("\nSaved results to activity_before_cutoff.csv")
+
+lowest = results_df.loc[results_df["MeanActivity"].idxmin()]
+
+print("\nLeast active region:")
+print(
+    f"T={int(lowest.Cutoff)} "
+    f"(Mean activity = {lowest.MeanActivity:.4f})"
+)
+
+print("\nInterpretation:")
+print("If T=40 has the LOWEST activity, it supports the hypothesis")
+print("that the LSTM is being truncated during a relatively flat")
+print("and uninformative portion of the ECG waveform.")
