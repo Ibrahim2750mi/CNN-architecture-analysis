@@ -60,7 +60,7 @@ def normalize_per_sample(X):
     return (X - mean) / std
 
 NUM_CLASSES = len(np.unique(y_train_full))
-LENGTH = 45
+LENGTH = 40
 SEEDS = [42, 123, 789]
 
 def train_at_length(seed, length, epochs=50, patience=10, lr=1e-3):
@@ -143,16 +143,70 @@ for seed in SEEDS:
     print(f"Seed {seed} | sensitivity at last 5 timesteps: {sens[-5:]}")
 
 sens_arr = np.stack(sensitivity_results)
-sens_mean, sens_std = sens_arr.mean(axis=0), sens_arr.std(axis=0)
+sens_mean = sens_arr.mean(axis=0)
+sens_std = sens_arr.std(axis=0)
 
-plt.figure(figsize=(10, 5))
-plt.plot(sens_mean, marker='o', markersize=3)
-plt.fill_between(range(LENGTH), sens_mean - sens_std, sens_mean + sens_std, alpha=0.2)
-plt.xlabel('Timestep')
-plt.ylabel('Sensitivity (output change under perturbation)')
-plt.title(f'Which timesteps does LSTM at T={LENGTH} actually rely on? (mean ± std, 5 seeds)')
-plt.grid(True, alpha=0.3)
-plt.savefig(f'sensitivity_T{LENGTH}.png', dpi=150, bbox_inches='tight')
+# -------------------------------------------------
+# CUMULATIVE SENSITIVITY
+# -------------------------------------------------
+
+cum_mean = np.cumsum(sens_mean)
+cum_mean = cum_mean / cum_mean[-1]          # normalize to [0,1]
+
+# cumulative curve for every seed (used for SD)
+cum_per_seed = np.cumsum(sens_arr, axis=1)
+cum_per_seed = cum_per_seed / cum_per_seed[:, -1][:, None]
+
+cum_std = cum_per_seed.std(axis=0)
+
+# Save CSV
+cum_df = pd.DataFrame({
+    "Timestep": np.arange(LENGTH),
+    "Sensitivity_Mean": sens_mean,
+    "Sensitivity_SD": sens_std,
+    "Cumulative_Mean": cum_mean,
+    "Cumulative_SD": cum_std
+})
+
+cum_df.to_csv(
+    f"sensitivity_cumulative_T{LENGTH}.csv",
+    index=False
+)
+
+# Plot
+plt.figure(figsize=(10,5))
+
+plt.plot(
+    np.arange(LENGTH),
+    cum_mean,
+    marker='o',
+    markersize=3,
+    linewidth=2,
+    label='Cumulative sensitivity'
+)
+
+plt.fill_between(
+    np.arange(LENGTH),
+    cum_mean-cum_std,
+    cum_mean+cum_std,
+    alpha=0.2
+)
+
+plt.xlabel("Timestep")
+plt.ylabel("Cumulative Fraction of Total Sensitivity")
+plt.title(
+    f"Cumulative Input Sensitivity of CNN-LSTM (T={LENGTH})\nMean ± 1 SD Across Seeds"
+)
+plt.ylim(0,1.05)
+plt.grid(alpha=0.3)
+plt.legend()
+
+plt.savefig(
+    f"sensitivity_cumulative_T{LENGTH}.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+
 plt.show()
 
 print(f"\nMost sensitive timestep: {sens_mean.argmax()} (value: {sens_mean.max():.4f})")
