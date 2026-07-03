@@ -74,7 +74,7 @@ def normalize_per_sample(X):
     return (X - mean) / std
 
 NUM_CLASSES = len(np.unique(y_train_full))
-LENGTH = 90
+lengths = [90, 100, 110, 120]
 ABLATE_REGION = (75, 90)  # this model's own last 15 timesteps
 
 
@@ -131,37 +131,38 @@ def ablate_region(X, start, end, mode='flatten'):
     return X_ablated
 
 
-SEEDS = [0, 42, 123, 256, 789]
+SEEDS = [42, 123, 789]
 results = []
 
 for seed in SEEDS:
-    model_pool, X_test_at_len = train_full_model(CNN_TemporalPooling, seed, LENGTH)
-    model_lstm, _ = train_full_model(CNN_LSTM, seed, LENGTH)
+    for length in lengths:
+        model_pool, X_test_at_len = train_full_model(CNN_TemporalPooling, seed, length)
+        model_lstm, _ = train_full_model(CNN_LSTM, seed, length)
 
-    X_orig_t = torch.tensor(X_test_at_len).unsqueeze(1).to(device)
-    with torch.no_grad():
-        acc_pool_orig = accuracy_score(y_test_full, model_pool(X_orig_t).argmax(dim=1).cpu().numpy())
-        acc_lstm_orig = accuracy_score(y_test_full, model_lstm(X_orig_t).argmax(dim=1).cpu().numpy())
+        X_orig_t = torch.tensor(X_test_at_len).unsqueeze(1).to(device)
+        with torch.no_grad():
+            acc_pool_orig = accuracy_score(y_test_full, model_pool(X_orig_t).argmax(dim=1).cpu().numpy())
+            acc_lstm_orig = accuracy_score(y_test_full, model_lstm(X_orig_t).argmax(dim=1).cpu().numpy())
 
-    X_abl = ablate_region(X_test_at_len, *ABLATE_REGION)
-    X_abl_t = torch.tensor(X_abl).unsqueeze(1).to(device)
-    with torch.no_grad():
-        acc_pool_abl = accuracy_score(y_test_full, model_pool(X_abl_t).argmax(dim=1).cpu().numpy())
-        acc_lstm_abl = accuracy_score(y_test_full, model_lstm(X_abl_t).argmax(dim=1).cpu().numpy())
+        X_abl = ablate_region(X_test_at_len, *ABLATE_REGION)
+        X_abl_t = torch.tensor(X_abl).unsqueeze(1).to(device)
+        with torch.no_grad():
+            acc_pool_abl = accuracy_score(y_test_full, model_pool(X_abl_t).argmax(dim=1).cpu().numpy())
+            acc_lstm_abl = accuracy_score(y_test_full, model_lstm(X_abl_t).argmax(dim=1).cpu().numpy())
 
-    pool_drop = acc_pool_orig - acc_pool_abl
-    lstm_drop = acc_lstm_orig - acc_lstm_abl
+        pool_drop = acc_pool_orig - acc_pool_abl
+        lstm_drop = acc_lstm_orig - acc_lstm_abl
 
-    print(f"Seed {seed} | Pool: {acc_pool_orig:.4f} -> {acc_pool_abl:.4f} (drop: {pool_drop:+.4f}) | "
-          f"LSTM: {acc_lstm_orig:.4f} -> {acc_lstm_abl:.4f} (drop: {lstm_drop:+.4f})")
+        print(f"Seed {seed} | Pool: {acc_pool_orig:.4f} -> {acc_pool_abl:.4f} (drop: {pool_drop:+.4f}) | "
+              f"LSTM: {acc_lstm_orig:.4f} -> {acc_lstm_abl:.4f} (drop: {lstm_drop:+.4f}) | Length: {length}")
 
-    results.append({'seed': seed, 'pool_drop': pool_drop, 'lstm_drop': lstm_drop})
+        results.append({'seed': seed, 'pool_drop': pool_drop, 'lstm_drop': lstm_drop, "length": length})
 
 df = pd.DataFrame(results)
-df.to_csv(f'ablation_T{LENGTH}_lastregion.csv', index=False)
+df.to_csv(f'ablation_T{75-90}_lastregion.csv', index=False)
 
 print(f"\n{'='*65}")
-print(f"T={LENGTH} — ablating own last 15 timesteps (t={ABLATE_REGION[0]}-{ABLATE_REGION[1]}, LOW cross-class variance)")
+print(f"T={75-90} — ablating own last 15 timesteps (t={ABLATE_REGION[0]}-{ABLATE_REGION[1]}, LOW cross-class variance)")
 print(f"{'='*65}")
 print(f"CNN+Pooling | mean drop: {df['pool_drop'].mean():.4f} ± {df['pool_drop'].std():.4f}")
 print(f"CNN+LSTM    | mean drop: {df['lstm_drop'].mean():.4f} ± {df['lstm_drop'].std():.4f}")
