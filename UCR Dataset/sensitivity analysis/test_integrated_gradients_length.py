@@ -3,6 +3,7 @@ import torch.nn as nn
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from captum.attr import IntegratedGradients
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
@@ -113,34 +114,98 @@ def train_at_length(seed, length, epochs=50, patience=10, lr=1e-3):
 # the T=45 model actually rely on?
 # ============================================================
 
-def compute_input_sensitivity(model, X_sample, device, n_trials=20, noise_std=0.5):
+def compute_integrated_gradients(
+    model,
+    X_sample,
+    device,
+    batch_size=8,
+    n_steps=32
+):
+    """
+    Compute mean absolute Integrated Gradients importance
+    for each timestep.
+
+    X_sample shape: (N, 1, T).
+
+    The computation is batched to avoid the large memory
+    requirements of Integrated Gradients with an LSTM.
+    """
     model.eval()
-    T = X_sample.shape[2]
-    sensitivities = np.zeros(T)
-    X_sample = X_sample.to(device)
-    with torch.no_grad():
-        baseline = model(X_sample).cpu().numpy()
-    for t in range(T):
-        diffs = []
-        for _ in range(n_trials):
-            X_pert = X_sample.clone()
-            noise = torch.randn(X_pert.shape[0], device=device) * noise_std
-            X_pert[:, 0, t] += noise
-            with torch.no_grad():
-                pert_out = model(X_pert).cpu().numpy()
-            diffs.append(np.abs(pert_out - baseline).mean())
-        sensitivities[t] = np.mean(diffs)
-    return sensitivities
+
+    ig = IntegratedGradients(model)
+    all_attributions = []
+
+    for start in range(0, len(X_sample), batch_size):
+
+        X_batch = X_sample[start:start + batch_size].to(device)
+        baseline = torch.zeros_like(X_batch)
+
+        # Use the model's predicted class as the attribution target,
+        # matching the original sensitivity analysis's model-output basis.
+        with torch.no_grad():
+            pred_class = model(X_batch).argmax(dim=1)
+
+        attributions = ig.attribute(
+            X_batch,
+            baselines=baseline,
+            target=pred_class,
+            n_steps=n_steps,
+            internal_batch_size=batch_size
+        )
+
+        all_attributions.append(
+            attributions.detach().cpu()
+        )
+
+        del X_batch, baseline, attributions
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    # Average across the actual samples, not across batches.
+    all_attributions = torch.cat(all_attributions, dim=0)
+
+    importance = (
+        all_attributions.abs()
+        .mean(dim=0)
+        .squeeze(0)
+        .numpy()
+    )
+
+    return importance
+
 
 
 sensitivity_results = []
 
 for seed in SEEDS:
     model, X_test_at_len = train_at_length(seed, LENGTH)
-    X_test_t = torch.tensor(X_test_at_len).unsqueeze(1)
-    sens = compute_input_sensitivity(model, X_test_t[:30], device)  # 30 samples for speed
+
+    # IMPORTANT:
+    # X_test_at_len has exactly LENGTH timestamps because the model was
+    # trained and evaluated at this same temporal length.
+    X_test_t = torch.tensor(
+        X_test_at_len,
+        dtype=torch.float32
+    ).unsqueeze(1)
+
+    # Keep the original experimental design:
+    # sensitivity is computed on the first 30 test samples for EVERY T.
+    # Thus T=40 -> 40 IG values, T=45 -> 45 IG values, etc.
+    sens = compute_integrated_gradients(
+        model,
+        X_test_t[:30],
+        device,
+        batch_size=8,
+        n_steps=32
+    )
+
     sensitivity_results.append(sens)
-    print(f"Seed {seed} | sensitivity at last 5 timesteps: {sens[-5:]}")
+
+    print(
+        f"Seed {seed} | T={LENGTH} | "
+        f"IG importance at last 5 timesteps: {sens[-5:]}"
+    )
 
 sens_arr = np.stack(sensitivity_results)
 sens_mean = sens_arr.mean(axis=0)
